@@ -1,0 +1,8 @@
+streamlit
+youtube-transcript-api
+faiss-cpu
+langchain
+langchain-community
+huggingface-hub
+python-dotenv
+langchain_huggingface
