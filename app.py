@@ -5,7 +5,7 @@ from ui.styles import inject_css
 from ui.sidebar import sidebar_ui
 from utils.youtube import extract_video_id, fetch_transcript
 from utils.text_processing import split_text
-from rag.embeddings import create_vectorstore
+from rag.embeddings import create_vectorstore, load_vectorstore
 from rag.llm import load_llm
 from rag.qa import answer_question
 
@@ -25,30 +25,53 @@ st.markdown("---")
 youtube_input, process = sidebar_ui()
 
 # ------------------ PROCESS VIDEO ------------------
+# ------------------ PROCESS VIDEO ------------------
 if process and youtube_input:
-    with st.spinner("Processing video transcript..."):
+    with st.spinner("Processing video..."):
         try:
             video_id = extract_video_id(youtube_input)
-            transcript = fetch_transcript(video_id)
 
-            chunks = split_text(transcript)
-            vectorstore, retriever = create_vectorstore(chunks)
+            # 1️⃣ Try loading existing vector DB (NO transcript fetch)
+            vectorstore, retriever = load_vectorstore(video_id)
+
+            if vectorstore is None:
+                # 2️⃣ First time seeing this video → full pipeline
+                st.info("New video detected. Fetching transcript...")
+
+                transcript = fetch_transcript(video_id)
+                chunks = split_text(transcript)
+
+                vectorstore, retriever = create_vectorstore(chunks, video_id)
+
+                chunks_count = len(chunks)
+                vectors_count = vectorstore._collection.count()
+
+                st.info("Video processed and stored in vector DB")
+
+            else:
+                # 3️⃣ Already processed → skip transcript + embedding
+                st.info("⚡ Video already indexed. Loaded from vector DB")
+
+                chunks_count = "Cached"
+                vectors_count = vectorstore._collection.count()
+
             model = load_llm()
 
             st.session_state.update({
                 "video_id": video_id,
                 "retriever": retriever,
                 "model": model,
-                "chunks_count": len(chunks),
-                "vectors_count": vectorstore.index.ntotal,
+                "chunks_count": chunks_count,
+                "vectors_count": vectors_count,
                 "transcript_processed": True
             })
 
-            st.success("✅ Video processed successfully!")
+            st.success("✅ Ready to answer questions!")
             st.rerun()
 
         except Exception as e:
             st.error(f"❌ Error: {e}")
+
 
 # ------------------ MAIN UI ------------------
 if st.session_state.get("transcript_processed", False):
