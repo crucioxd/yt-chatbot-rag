@@ -98,7 +98,7 @@ if st.session_state.get("transcript_processed", False):
 
         if ask and question:
             with st.spinner("Searching for answer..."):
-                answer, docs = answer_question(
+                answer, docs, timestamps = answer_question(
                     st.session_state.model,
                     st.session_state.retriever,
                     question
@@ -110,6 +110,15 @@ if st.session_state.get("transcript_processed", False):
                     f"<div class='answer-container'>{answer}</div>",
                     unsafe_allow_html=True
                 )
+                if timestamps:
+                    st.markdown("### ⏱ Evidence from video:")
+                    for t in timestamps[:3]:
+                        seconds = int(t["seconds"])
+                        link = (
+                            f"https://www.youtube.com/watch?"
+                            f"v={st.session_state.video_id}&t={t['seconds']}s"
+                        )
+                        st.markdown(f"- [{t['formatted']}]({link})")
 
                 with st.expander("🔍 View Retrieved Context"):
                     for i, doc in enumerate(docs):
