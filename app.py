@@ -12,144 +12,124 @@ from rag.qa import answer_question
 # ------------------ CONFIG ------------------
 load_dotenv()
 st.set_page_config(
-    page_title="YouTube RAG Chatbot",
+    page_title="YouTube Q&A Chatbot",
     page_icon="🎥",
     layout="wide"
 )
 
 inject_css()
-st.title("🎥 YouTube Q&A Assistant")
-st.markdown("---")
+
+# --- Initialize Session State ---
+if "messages" not in st.session_state:
+    st.session_state.messages = []
+if "transcript_processed" not in st.session_state:
+    st.session_state.transcript_processed = False
 
 # ------------------ SIDEBAR ------------------
+# This contains your URL input and the "Process" button
 youtube_input, process = sidebar_ui()
 
-# ------------------ PROCESS VIDEO ------------------
-# ------------------ PROCESS VIDEO ------------------
+# ------------------ PROCESS VIDEO logic ------------------
 if process and youtube_input:
     with st.spinner("Processing video..."):
         try:
             video_id = extract_video_id(youtube_input)
 
-            # 1️⃣ Try loading existing vector DB (NO transcript fetch)
+            # 1. Load or Create Vector Store
             vectorstore, retriever = load_vectorstore(video_id)
-
             if vectorstore is None:
-                # 2️⃣ First time seeing this video → full pipeline
                 st.info("New video detected. Fetching transcript...")
-
                 transcript = fetch_transcript(video_id)
                 chunks = split_text(
                     transcript, max_window_seconds=120, max_chars=4000)
-
                 vectorstore, retriever = create_vectorstore(chunks, video_id)
-
                 chunks_count = len(chunks)
                 vectors_count = vectorstore._collection.count()
-
-                st.info("Video processed and stored in vector DB")
-
             else:
-                # 3️⃣ Already processed → skip transcript + embedding
-                st.info("⚡ Video already indexed. Loaded from vector DB")
-
                 chunks_count = "Cached"
                 vectors_count = vectorstore._collection.count()
 
             model = load_llm()
 
+            # 2. Update state and CLEAR old chat history for the new video
             st.session_state.update({
                 "video_id": video_id,
                 "retriever": retriever,
                 "model": model,
                 "chunks_count": chunks_count,
                 "vectors_count": vectors_count,
-                "transcript_processed": True
+                "transcript_processed": True,
+                "messages": []  # Reset chat history for the new video
             })
-
-            st.success("✅ Ready to answer questions!")
             st.rerun()
 
         except Exception as e:
             st.error(f"❌ Error: {e}")
 
-
 # ------------------ MAIN UI ------------------
-if st.session_state.get("transcript_processed", False):
-
+if not st.session_state.transcript_processed:
+    # Landing State
+    st.title("🎥 YouTube Q&A Assistant")
+    st.info(
+        "👈 Please enter a YouTube URL in the sidebar and click 'Process Video' to begin.")
+else:
+    # Chatting State
     left_col, right_col = st.columns([2, 1])
 
-    # ========== LEFT COLUMN ==========
     with left_col:
-        st.header("❓ Ask Questions About the Video")
+        st.header("❓ Chat with the Video")
 
-        question = st.text_input(
-            "Enter your question",
-            placeholder="Ask anything based on the video content..."
-        )
+        # Display chat messages from history on app rerun
+        for message in st.session_state.messages:
+            with st.chat_message(message["role"]):
+                st.markdown(message["content"])
 
-        col1, col2 = st.columns([1, 3])
-        with col1:
-            ask = st.button("🔍 Get Answer", type="primary")
+        # React to user input
+        if prompt := st.chat_input("Ask me anything about the video..."):
+            # 1. Display user message
+            with st.chat_message("user"):
+                st.markdown(prompt)
+            st.session_state.messages.append(
+                {"role": "user", "content": prompt})
 
-        with col2:
-            if st.button("🔄 Process New Video"):
-                st.session_state.clear()
-                st.rerun()
+            # 2. Generate response
+            with st.chat_message("assistant"):
+                with st.spinner("Thinking..."):
+                    # Use our new memory-aware answer function
+                    # We pass history EXCLUDING the current prompt to the helper
+                    answer, docs, timestamps = answer_question(
+                        st.session_state.model,
+                        st.session_state.retriever,
+                        prompt,
+                        st.session_state.messages[:-1]
+                    )
+                    st.markdown(answer)
 
-        if ask and question:
-            with st.spinner("Searching for answer..."):
-                answer, docs, timestamps = answer_question(
-                    st.session_state.model,
-                    st.session_state.retriever,
-                    question
-                )
+                    if timestamps:
+                        with st.expander("⏱ Sources from Video"):
+                            for t in timestamps[:3]:
+                                link = f"https://www.youtube.com/watch?v={st.session_state.video_id}&t={t['seconds']}s"
+                                st.markdown(f"- [{t['formatted']}]({link})")
 
-                st.markdown("---")
-                st.subheader("💡 Answer")
-                st.markdown(
-                    f"<div class='answer-container'>{answer}</div>",
-                    unsafe_allow_html=True
-                )
-                # if timestamps:
-                #     st.markdown("### ⏱ Evidence from video:")
-                #     for t in timestamps[:3]:
-                #         seconds = int(t["seconds"])
-                #         link = (
-                #             f"https://www.youtube.com/watch?"
-                #             f"v={st.session_state.video_id}&t={t['seconds']}s"
-                #         )
-                #         st.markdown(f"- [{t['formatted']}]({link})")
+            # 3. Save assistant response
+            st.session_state.messages.append(
+                {"role": "assistant", "content": answer})
 
-                # with st.expander("🔍 View Retrieved Context"):
-                #     for i, doc in enumerate(docs):
-                #         st.markdown(f"**Chunk {i+1}:**")
-                #         st.text(
-                #             doc.page_content[:400] + "..."
-                #             if len(doc.page_content) > 400
-                #             else doc.page_content
-                #         )
-                #         st.markdown("---")
-
-    # ========== RIGHT COLUMN ==========
     with right_col:
-        st.header("🎬 Video Information")
-
+        st.header("🎬 Video Info")
         st.image(
-            f"https://img.youtube.com/vi/{st.session_state.video_id}/0.jpg",
-            use_container_width=True
-        )
+            f"https://img.youtube.com/vi/{st.session_state.video_id}/0.jpg")
 
-        st.markdown("---")
-        st.subheader("📊 Processing Stats")
+        with st.container(border=True):
+            st.subheader("📊 Stats")
+            st.metric("Chunks", st.session_state.chunks_count)
+            st.metric("Vectors", st.session_state.vectors_count)
 
-        st.success("Transcript Processed")
-        st.metric("Chunks Created", st.session_state.chunks_count)
-        st.metric("Vectors Stored", st.session_state.vectors_count)
+        if st.button("🔄 Reset Chat", use_container_width=True):
+            st.session_state.messages = []
+            st.rerun()
 
 # ------------------ FOOTER ------------------
 st.markdown("---")
-st.markdown(
-    "<div style='text-align:center'>Built by Puneet</div>",
-    unsafe_allow_html=True
-)
+st.markdown("<div style='text-align:center'>Built by Puneet</div>",
+            unsafe_allow_html=True)
