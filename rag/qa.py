@@ -4,22 +4,20 @@ from langchain_core.prompts import PromptTemplate
 # ---------------- PROMPTS ----------------
 
 LOCAL_QA_PROMPT = """
-You are a precise assistant answering questions based ONLY on the provided context.
-
-Rules:
-- Use ONLY the information from the context.
-- If the answer is not present, say:
-  "The video does not discuss this topic."
-- Adjust the length of your answer based on the question:
-  - Short and direct for factual questions
-  - More detailed and explanatory for "why", "how", or "explain" questions
-- Do NOT add external knowledge.
+You are an expert AI Assistant analyzing a video transcript.
+You are provided with several distinct chunks of the transcript (Context).
 
 Context:
 {context}
 
-Question:
-{question}
+User Question: {question}
+
+Instructions:
+1. Answer the question comprehensively using ONLY the provided context.
+2. If the context contains the answer, explain it in detail.
+3. If the context mentions different viewpoints, summarize all of them.
+4. Cite the specific moments (e.g., [10:23]) if timestamps are available in the text.
+5. If the answer is NOT in the context, strictly say: "I analyzed the available transcript segments, but they do not contain the answer to this specific question."
 
 Answer:
 """
@@ -88,16 +86,23 @@ def answer_question(model, retriever, question: str):
 
 # ---------------- LOCAL QA ----------------
 
+# Update _local_qa to use the new TOP_K from config implicitly or explicitly
 def _local_qa(model, retriever, question: str):
-    if is_deep_question(question):
-        docs = retriever.vectorstore.similarity_search(question, k=8)
-    else:
-        docs = retriever.invoke(question)
+    # Simply use the retriever which now uses the higher TOP_K from config
+    docs = retriever.invoke(question)
 
     if not docs:
         return "The video does not discuss this topic.", [], []
 
-    context = "\n\n".join(doc.page_content for doc in docs)
+    # Inject timestamps into the text fed to the LLM so it can cite them
+    context_list = []
+    for doc in docs:
+        start = doc.metadata.get('start_time', 0)
+        formatted_time = f"[{int(start//60)}:{int(start%60):02d}]"
+        context_list.append(f"{formatted_time} {doc.page_content}")
+
+    context = "\n\n".join(context_list)
+
     prompt = LOCAL_QA_PROMPT.format(context=context, question=question)
     response = model.invoke(prompt)
 
@@ -110,27 +115,60 @@ def _local_qa(model, retriever, question: str):
 
 def _global_summary(model, retriever):
     """
-    Hierarchical summarization:
-    - Pull representative chunks across the entire video
-    - Summarize them into key takeaways
+    Refined Strategy: 
+    Instead of searching for "", we search for key structural terms 
+    to get the beginning, middle, and end, or main topics.
     """
 
-    # 1️⃣ Pull globally representative chunks (NOT question-based)
-    docs = retriever.vectorstore.similarity_search(
-        "", k=15
+    # Strategy: specific queries to get a spread of content
+    queries = ["introduction and agenda",
+               "main conclusion and takeaways", "key arguments and debate"]
+
+    all_docs = []
+    for q in queries:
+        # Fetch 5 chunks for each query aspect
+        docs = retriever.vectorstore.similarity_search(q, k=5)
+        all_docs.extend(docs)
+
+    # Remove duplicates
+    seen = set()
+    unique_docs = []
+    for doc in all_docs:
+        # Assuming content is the unique identifier
+        if doc.page_content not in seen:
+            unique_docs.append(doc)
+            seen.add(doc.page_content)
+
+    # Sort by time so the LLM reads a chronological story
+    unique_docs.sort(key=lambda x: x.metadata.get('start_time', 0))
+
+    context = "\n\n".join(
+        f"[Time: {int(d.metadata.get('start_time', 0)//60)}:{int(d.metadata.get('start_time', 0)%60):02d}] {d.page_content}"
+        for d in unique_docs
     )
 
-    context = "\n\n".join(doc.page_content for doc in docs)
-    prompt = SUMMARY_PROMPT.format(context=context)
+    prompt = f"""
+    You are an expert content summarizer. Below are key segments from a video transcript, sorted chronologically.
+
+    Transcript Segments:
+    {context}
+
+    Task:
+    Provide a detailed, bullet-point summary of the video. 
+    1. Start with a 1-sentence "Hook" describing the video.
+    2. Provide 3-5 "Key Takeaways" with detailed explanations.
+    3. End with a "Conclusion".
+    
+    Summary:
+    """
 
     response = model.invoke(prompt)
+    timestamps = _extract_timestamps(unique_docs)
 
-    timestamps = _extract_timestamps(docs)
-
-    return response.content, docs, timestamps
-
+    return response.content, unique_docs, timestamps
 
 # ---------------- TIMESTAMP UTILS ----------------
+
 
 def _extract_timestamps(docs):
     timestamps = []

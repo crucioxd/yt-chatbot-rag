@@ -39,7 +39,8 @@ if process and youtube_input:
                 st.info("New video detected. Fetching transcript...")
 
                 transcript = fetch_transcript(video_id)
-                chunks = split_text(transcript)
+                chunks = split_text(
+                    transcript, max_window_seconds=120, max_chars=4000)
 
                 vectorstore, retriever = create_vectorstore(chunks, video_id)
 
@@ -110,25 +111,25 @@ if st.session_state.get("transcript_processed", False):
                     f"<div class='answer-container'>{answer}</div>",
                     unsafe_allow_html=True
                 )
-                if timestamps:
-                    st.markdown("### ⏱ Evidence from video:")
-                    for t in timestamps[:3]:
-                        seconds = int(t["seconds"])
-                        link = (
-                            f"https://www.youtube.com/watch?"
-                            f"v={st.session_state.video_id}&t={t['seconds']}s"
-                        )
-                        st.markdown(f"- [{t['formatted']}]({link})")
+                # if timestamps:
+                #     st.markdown("### ⏱ Evidence from video:")
+                #     for t in timestamps[:3]:
+                #         seconds = int(t["seconds"])
+                #         link = (
+                #             f"https://www.youtube.com/watch?"
+                #             f"v={st.session_state.video_id}&t={t['seconds']}s"
+                #         )
+                #         st.markdown(f"- [{t['formatted']}]({link})")
 
-                with st.expander("🔍 View Retrieved Context"):
-                    for i, doc in enumerate(docs):
-                        st.markdown(f"**Chunk {i+1}:**")
-                        st.text(
-                            doc.page_content[:400] + "..."
-                            if len(doc.page_content) > 400
-                            else doc.page_content
-                        )
-                        st.markdown("---")
+                # with st.expander("🔍 View Retrieved Context"):
+                #     for i, doc in enumerate(docs):
+                #         st.markdown(f"**Chunk {i+1}:**")
+                #         st.text(
+                #             doc.page_content[:400] + "..."
+                #             if len(doc.page_content) > 400
+                #             else doc.page_content
+                #         )
+                #         st.markdown("---")
 
     # ========== RIGHT COLUMN ==========
     with right_col:
